@@ -1,6 +1,6 @@
 import socket,thread,sys,os
 
-MAX_BUFF_SIZE = 40000 # max size fo requests
+MAX_BUFF_SIZE = 40000 # max size for requests
 BACKLOG = 10 # number of incoming connections that can be queued for acceptance
 host = '' # localhost(blank)
 port = 8080 # alt-http-port
@@ -31,35 +31,38 @@ def main():
 #*********** Get the request from browser *********************************
 def request_thread(conn, addr, request):
 
-    isHTTPS, webserver, port, url = parse_req(request)
-    print("url = " + url)
-    print("webserver = " + webserver)
-    print("port = " + str(port))
-    if BLOCKED.get(url) == 1:
-        conn.send("HTTP/1.0 200 OK\r\n")
-        print_msg_browser(conn, "Blocked by Administrator")
-        conn.close()
-        sys.exit(1)
-    else:
-        if isHTTPS is True:
-            pass
-            print("HTTPS REQUEST!!!!")
-
+    try:
+        ssl, webserver, port, url = parse_req(request)
+        print("url = " + url)
+        print("webserver = " + webserver)
+        print("port = " + str(port))
+        if BLOCKED.get(url) == 1:
+            conn.send("HTTP/1.0 200 OK\r\n")
+            print_msg_browser(conn, "Blocked by Administrator")
+            conn.close()
+            sys.exit(1)
         else:
-            http_connect(conn, webserver, port, request)
+            if ssl is True:
+                print("HTTPS REQUEST!!!!")
+                https_connect(conn, webserver, port, request)
+
+            else:
+                http_connect(conn, webserver, port, request)
+    except Exception:
+        pass
 #****************************************************************************
 #****************************************************************************
 
 def parse_req(request):
-    isHTTPS = False
     try:
         first_line = request.split('\n')[0]
         url = first_line.split(' ')[1]
-        #HTTPS requests will have "GET" encrypted
-        if first_line.find("GET") == -1:
-            isHTTPS = True
-        # print("Request:",first_line, addr)
-
+        print(first_line)
+        # Tunneling request
+        if "CONNECT" in first_line:
+            ssl = True
+        else:
+            ssl = False
 #*********** Parse request for webserver and port *************************
 
         http_pos = url.find("://")          # find position of ://
@@ -80,18 +83,20 @@ def parse_req(request):
         webserver = ""
         port = -1
         if (port_pos==-1 or webserver_pos < port_pos):
-            port = 80 # default port
-            webserver = temp[:webserver_pos]
+            if ssl is True:
+                port = 443 # default ssl port
+            else:
+                port = 80 # default standard port
+                webserver = temp[:webserver_pos]
         else:       # specific port
             port = int((temp[(port_pos+1):])[:webserver_pos-port_pos-1])
             webserver = temp[:port_pos]
-        if isHTTPS:
-            port = 443
 
-        return isHTTPS, webserver, port, url
+        return ssl, webserver, port, url
 
     except Exception:
-        print("Expception")
+        pass
+        print("Exception")
 
 
 
@@ -127,9 +132,40 @@ def http_connect(conn, webserver, port, request):
 #****************************************************************************
 #****************************************************************************
 
-def https_connect(conn):
-    pass
+def https_connect(conn, webserver, port, request):
+    try:
 
+        #The proxy accepts the connection on its port 8080, receives the
+        #request, and connects to the destination server on the port requested by the client
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.connect((webserver, port))
+
+        #Proxy replies to the client that a connection is established
+        conn.sendall("HTTP/1.0 200 Connection established\r\nProxy-Agent: Pyx\r\n\r\n")
+
+        # Indiscriminately forward bytes using SSL tunneling
+        s.setblocking(0)
+        conn.setblocking(0)
+        while True:
+            try:
+                request = conn.recv(MAX_BUFF_SIZE)
+                s.sendall(request) # send browser request to web server
+            except socket.error as err:
+                pass
+            try:
+                reply = s.recv(MAX_BUFF_SIZE)
+                conn.sendall(reply) # send server reply to browser
+            except socket.error as err:
+                pass
+
+        s.close()
+        conn.close()
+
+    except socket.error as err:
+        # If the connection could not be established, exit
+        # Should properly handle the exit with http error code here
+        print(err)
+        #break
 
 def print_msg_browser(conn, string):
             conn.send("Content-Length: 11\r\n")
